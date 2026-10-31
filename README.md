@@ -21,6 +21,10 @@ It then opens like a normal app, full screen, and works offline.
 
 - Everything is saved **on the phone only** — no account, nothing sent anywhere.
 - Use **Settings → Save backup** to keep a copy or move to a new phone.
+- Turn on **Settings → 🔔 Deadline reminders** to get a notification 1 week, 3 days,
+  1 day before and/or on the day. Reminders appear when the app is opened; on
+  Android with the app installed, it can also check in the background now and then.
+  On iPhone, install the app to the Home Screen first.
 
 ## For developers
 

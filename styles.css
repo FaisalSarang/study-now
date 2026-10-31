@@ -311,7 +311,23 @@ textarea.field { resize: vertical; min-height: 64px; }
 .card h2 { font-size: 20px; }
 .card .label:first-child { margin-top: 0; }
 .card p { margin: 8px 0; }
-.card .row .btn { flex: 1; }
+.card .row { flex-wrap: wrap; }
+.card .row .btn { flex: 1 1 auto; }
+.switch-row { display: flex; align-items: center; gap: 14px; width: 100%; text-align: left; }
+.switch-row > span:first-child { display: grid; gap: 4px; flex: 1; }
+.switch-row:disabled { cursor: default; }
+.switch-title { font: 600 20px var(--font-head); }
+.switch {
+  position: relative; flex: none; width: 58px; height: 34px; border-radius: 99px;
+  background: #E2DCF5; transition: background .2s;
+}
+.switch::after {
+  content: ''; position: absolute; top: 4px; left: 4px; width: 26px; height: 26px; border-radius: 50%;
+  background: #fff; box-shadow: 0 2px 4px rgba(45, 42, 74, .2); transition: transform .2s cubic-bezier(.3, 1.4, .5, 1);
+}
+.switch.on { background: var(--primary); }
+.switch.on::after { transform: translateX(24px); }
+.note { margin: 12px 0 0; padding: 10px 14px; border-radius: 14px; background: #FFF4CC; font-weight: 700; }
 
 /* ---------- Toast / modal / confetti ---------- */
 #toast {

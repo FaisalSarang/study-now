@@ -47,18 +47,24 @@ const TIPS = [
 
 /* ================= Storage ================= */
 
+const defaultReminders = () => ({ enabled: false, days: [...REMINDER_DEFAULT_DAYS] });
+
 function loadState() {
   try {
     const s = JSON.parse(localStorage.getItem(STORE_KEY));
-    if (s && Array.isArray(s.goals)) return s;
+    if (s && Array.isArray(s.goals)) {
+      s.reminders = s.reminders || defaultReminders();
+      return s;
+    }
   } catch (_) { /* fall through */ }
-  return { name: '', goals: [] };
+  return { name: '', goals: [], reminders: defaultReminders() };
 }
 
 let state = loadState();
 
 function save() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (_) { /* storage full or blocked */ }
+  syncReminders();
 }
 
 function loadDraft() {
@@ -130,6 +136,47 @@ function greeting() {
 
 function vibrate(ms) {
   try { navigator.vibrate && navigator.vibrate(ms); } catch (_) { /* ignore */ }
+}
+
+/* ================= Reminders ================= */
+
+const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || !!navigator.standalone;
+const canNotify = () => 'Notification' in window && 'serviceWorker' in navigator && location.protocol !== 'file:';
+
+function syncReminders() {
+  if (!('caches' in window)) return Promise.resolve();
+  return writeReminderJSON(REMINDER_DATA_URL, {
+    enabled: state.reminders.enabled,
+    days: state.reminders.days,
+    goals: state.goals.map(g => {
+      const p = progress(g);
+      return { id: g.id, title: g.title, date: g.date, emoji: (GOAL_TYPES[g.type] || GOAL_TYPES.study).emoji, total: p.total, left: p.total - p.done };
+    }),
+  });
+}
+
+async function runReminders() {
+  if (!state.reminders.enabled || !canNotify()) return;
+  await syncReminders();
+  await checkReminders(await navigator.serviceWorker.ready);
+}
+
+// Background checks: only Chrome on Android with the app installed supports this.
+async function registerBackgroundCheck() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    if (!reg.periodicSync) return;
+    const status = await navigator.permissions.query({ name: 'periodic-background-sync' });
+    if (status.state === 'granted') await reg.periodicSync.register('deadline-check', { minInterval: 6 * 60 * 60 * 1000 });
+  } catch (_) { /* not supported */ }
+}
+
+async function unregisterBackgroundCheck() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    if (reg.periodicSync) await reg.periodicSync.unregister('deadline-check');
+  } catch (_) { /* not supported */ }
 }
 
 /* ================= Routing ================= */
@@ -234,15 +281,13 @@ function goalCard(g) {
 }
 
 function installBanner() {
-  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
-  if (standalone) return '';
+  if (isStandalone()) return '';
   if (deferredInstall) {
     return `<div class="banner"><span>📲 Put Study NOW on your home screen!</span><button class="btn small primary" data-action="install">Install</button></div>`;
   }
-  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
   let dismissed = false;
   try { dismissed = !!localStorage.getItem(IOS_TIP_KEY); } catch (_) { /* ignore */ }
-  if (ios && !dismissed) {
+  if (isIOS && !dismissed) {
     return `<div class="banner"><span>📲 Tap <b>Share</b> then <b>Add to Home Screen</b> to install this app.</span><button class="icon-btn small" data-action="dismissIosTip" aria-label="Dismiss">✕</button></div>`;
   }
   return '';
@@ -483,6 +528,8 @@ function viewSettings() {
     </div>
   </section>
 
+  ${reminderCard()}
+
   <section class="card">
     <h2>💾 Backup</h2>
     <p class="muted small">Your goals are saved on this phone only. Make a backup file to keep them safe or move them to a new phone.</p>
@@ -505,6 +552,36 @@ function viewSettings() {
   </section>
 
   <p class="muted small center">Study NOW · made with 💜</p>`;
+}
+
+function reminderCard() {
+  const r = state.reminders;
+  let note = '';
+  if (!canNotify()) {
+    note = isIOS && !isStandalone()
+      ? 'On iPhone or iPad, first add this app to your Home Screen (Share → Add to Home Screen), then open it from there to turn reminders on.'
+      : 'This browser can’t show notifications.';
+  } else if (Notification.permission === 'denied') {
+    note = 'Notifications are blocked. Allow them for this app in your phone’s settings, then try again.';
+  }
+  const on = r.enabled && canNotify() && Notification.permission === 'granted';
+
+  return `
+  <section class="card">
+    <button class="switch-row" data-action="toggleReminders" role="switch" aria-checked="${on}" ${note && !on ? 'disabled' : ''}>
+      <span><span class="switch-title">🔔 Deadline reminders</span><span class="muted small">Ollie tells you when a deadline is getting close.</span></span>
+      <span class="switch ${on ? 'on' : ''}" aria-hidden="true"></span>
+    </button>
+    ${note ? `<p class="note small">${note}</p>` : ''}
+    ${on ? `
+      <p class="label">Remind me…</p>
+      <div class="chips">
+        ${REMINDER_OPTIONS.map(([days, label]) =>
+          `<button class="chip ${r.days.includes(days) ? 'on' : ''}" data-action="toggleReminderDay" data-days="${days}">${label}</button>`).join('')}
+      </div>
+      <button class="btn block" data-action="testReminder">Send a test 🔔</button>
+      <p class="muted small">Reminders show up when you open the app.${isIOS ? '' : ' On Android, with the app installed, Ollie can also check in the background now and then (never at night).'}</p>` : ''}
+  </section>`;
 }
 
 /* ================= Toast / modal / confetti ================= */
@@ -801,6 +878,54 @@ const actions = {
     save();
     toast('Saved! ✅');
   },
+  async toggleReminders() {
+    const r = state.reminders;
+    if (r.enabled && Notification.permission === 'granted') {
+      r.enabled = false;
+      save();
+      unregisterBackgroundCheck();
+      render();
+      toast('Reminders off 🔕');
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      render();
+      toast('Reminders need permission to notify 🔔');
+      return;
+    }
+    r.enabled = true;
+    save();
+    render();
+    toast('Reminders on! 🔔');
+    registerBackgroundCheck();
+    runReminders();
+  },
+  toggleReminderDay(el) {
+    const days = Number(el.dataset.days);
+    const r = state.reminders;
+    if (r.days.includes(days)) {
+      if (r.days.length === 1) { toast('Keep at least one reminder'); return; }
+      r.days = r.days.filter(d => d !== days);
+    } else {
+      r.days.push(days);
+    }
+    save();
+    render();
+  },
+  async testReminder() {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      await reg.showNotification('🦉 Hoot hoot!', {
+        body: 'Reminders are working. I’ll tell you when a deadline is getting close!',
+        icon: 'icons/icon-192.png',
+        badge: 'icons/badge-96.png',
+        tag: 'test',
+      });
+    } catch (_) {
+      toast('Couldn’t send a notification 😕');
+    }
+  },
   exportData() {
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
@@ -815,7 +940,7 @@ const actions = {
   importData() { document.getElementById('import-file').click(); },
   async resetAll() {
     if (!(await askConfirm('Delete everything?', 'All goals and tasks will be gone forever.', 'Delete all'))) return;
-    state = { name: state.name, goals: [] };
+    state = { name: state.name, goals: [], reminders: state.reminders };
     save();
     clearDraft();
     location.replace('#/');
@@ -831,7 +956,7 @@ document.getElementById('import-file').addEventListener('change', async e => {
     const data = JSON.parse(await file.text());
     if (!data || !Array.isArray(data.goals)) throw new Error('bad file');
     if (!(await askConfirm('Load this backup?', `It has ${data.goals.length} goal(s). Your current goals will be replaced.`, 'Load'))) return;
-    state = { name: data.name || state.name, goals: data.goals };
+    state = { name: data.name || state.name, goals: data.goals, reminders: state.reminders };
     save();
     toast('Backup loaded! 🎉');
     location.replace('#/');
@@ -880,11 +1005,19 @@ window.addEventListener('beforeinstallprompt', e => {
 
 // Refresh countdowns when the app comes back to the front on a new day.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && route().view !== 'new' && route().view !== 'edit') render();
+  if (document.visibilityState !== 'visible') return;
+  if (route().view !== 'new' && route().view !== 'edit') render();
+  runReminders();
 });
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+    if (state.reminders.enabled) {
+      registerBackgroundCheck();
+      runReminders();
+    }
+  });
 }
 
 render();
